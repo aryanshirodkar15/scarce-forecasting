@@ -8,7 +8,7 @@ from forecast_scarce.data.base import Dataset
 from forecast_scarce.intermittency import classify
 from forecast_scarce.sampling import STRATA, ScarcitySpec, sample
 
-DAYS = 800
+DAYS = 1000
 PER_STRATUM = 10
 
 
@@ -103,11 +103,34 @@ def test_shortfall_is_recorded_when_a_quadrant_runs_out(dataset):
     assert s2.manifest.shortfall == {q: 5 for q in STRATA}
 
 
-def test_window_is_exactly_history_days_long(dataset):
+def test_window_carries_training_plus_the_shared_test_period(dataset):
     for days in (60, 120, 365, 730):
         s = sample(dataset, spec(history_days=days))
         per_series = s.panel.groupby("series_id", observed=True).size().unique()
-        assert per_series.tolist() == [days]
+        assert per_series.tolist() == [days + 168]
+
+
+def test_test_period_is_identical_across_history_lengths(dataset):
+    """The whole point of the split design: every cell is scored on the same days."""
+    starts = {
+        sample(dataset, spec(history_days=d)).manifest.test_start
+        for d in (60, 120, 365, 730)
+    }
+    assert len(starts) == 1
+
+
+def test_training_span_matches_history_days(dataset):
+    s = sample(dataset, spec(history_days=120))
+    test_start = pd.Timestamp(s.manifest.test_start)
+    train = s.panel.loc[s.panel["ds"] < test_start]
+    assert train.groupby("series_id", observed=True).size().unique().tolist() == [120]
+
+
+def test_test_period_length_matches_spec(dataset):
+    s = sample(dataset, spec(history_days=120))
+    test_start = pd.Timestamp(s.manifest.test_start)
+    held = s.panel.loc[s.panel["ds"] >= test_start]
+    assert held.groupby("series_id", observed=True).size().unique().tolist() == [168]
 
 
 def test_window_ends_at_the_frame_end(dataset):
@@ -173,9 +196,9 @@ def test_drift_rate_is_reported(dataset):
     assert 0.0 <= s.manifest.quadrant_drift_rate <= 1.0
 
 
-def test_history_longer_than_frame_is_rejected():
+def test_history_plus_test_longer_than_frame_is_rejected():
     with pytest.raises(ValueError, match="exceeds frame_days"):
-        spec(history_days=900, frame_days=730)
+        spec(history_days=730, test_days=168, frame_days=730)
 
 
 def test_rate_without_pattern_is_rejected():

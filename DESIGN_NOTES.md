@@ -232,3 +232,75 @@ percent. No basis exists for preferring either figure and averaging them would
 invent an observation, so those days are marked unobserved. `to_daily_grid` now
 rejects unresolved duplicates with an actionable message rather than surfacing a
 cryptic pandas reindexing error.
+
+## Stage 3: splits and metrics
+
+### A shared test period, not splits inside each window
+
+Rolling-origin folds carved out of each window separately would have broken the
+central comparison in two ways at once.
+
+First, correlation. With a 28-day horizon a 60-day window leaves about 32 days to
+train on and only fits a couple of origins, so folds must overlap heavily. A
+730-day window fits dozens of disjoint folds. Overlapping test windows are
+correlated, which inflates the effective sample size that Diebold-Mariano tests
+and bootstrap intervals assume, and inflates it by a different amount in every
+cell. The significance machinery would be miscalibrated inconsistently across the
+exact axis under study.
+
+Second, different targets. Cells would be scored on different days, so a metric
+difference between a 60-day cell and a 730-day cell would mix the effect of
+training volume with the effect of being graded on different data.
+
+Both dissolve if the splitting moves outside the window. One test period, fixed
+in calendar time, shared by every cell: same dates, same series, same targets.
+`history_days` then controls only how much training data precedes it. This is the
+standard shape of a learning-curve experiment, and it makes the crossover
+literally a pair of curves crossing over a shared horizontal axis.
+
+The training window slides rather than expands. If it expanded as the origin
+advanced, a cell labelled 60 days would have seen 200 days of data by the final
+fold and the label would be false. Sliding at fixed width keeps the training size
+at exactly `history_days` in every fold.
+
+Horizon is 28 days with six folds, giving a 168-day test period. Twenty-eight
+days matches the M5 convention, so numbers stay commensurable with published
+work, and it corresponds to a monthly reorder cycle.
+
+One consequence to state plainly, because it looks like leakage and is not: from
+the second fold onward the training window contains days that were the previous
+fold's test targets. That is what rolling-origin evaluation means. At each origin
+the forecaster may use every actual observed before that origin, and no fold ever
+sees its own targets.
+
+This forced a change upstream. Eligibility now spans the longest history plus the
+test period, 730 + 168 = 898 days, and each sampled cell carries its training
+span and the shared test period together.
+
+### Metrics ignore absence rather than scoring it as zero
+
+Every metric drops pairs where the actual is unobserved. Since the protocol
+injects gaps across the whole window including the evaluation region, scoring a
+NaN target as a zero would reward whichever model degrades most gracefully on
+missing inputs, which is not the quantity anyone wants to measure.
+
+The mirror-image rule matters just as much: an observed zero is a real
+observation and is scored normally. Confusing the two in either direction breaks
+the benchmark, so both directions are pinned by tests.
+
+Scale denominators are computed on training data, over seasonal pairs where both
+ends are observed, so a gap removes the pairs that straddle it instead of
+contributing a difference measured against a NaN. Where the denominator is zero,
+a training window with no seasonal variation at all, the metric returns NaN and
+drops out of the aggregate rather than dividing by zero.
+
+MAPE appears nowhere. It is undefined wherever demand is zero, and zero demand is
+the normal case across most of the intermittent regime.
+
+### Pipeline validation
+
+Sampling, splitting and metric evaluation run end to end on the real CTA panel.
+At 60 and 730 days of history the pipeline scores an identical 1,344 points on
+the same test period beginning 2026-01-14, while training on 480 and 5,840 rows
+respectively. Identical targets and differing training volume is precisely the
+design intent, confirmed on real data rather than asserted.

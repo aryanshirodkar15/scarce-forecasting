@@ -37,10 +37,14 @@ class ScarcitySpec:
     missing_rate: float = 0.0
     missing_pattern: Pattern = "none"
     seed: int = 0
+    # Every cell is scored on the same calendar test period, so the window a cell
+    # carries is history_days of training plus test_days of evaluation.
+    test_days: int = 168
     # Eligibility is judged over this window, not over history_days, so that the
     # same series are available at every history length. Otherwise the short
     # cells would quietly draw from a different, longer-lived population.
-    frame_days: int = 730
+    # Defaults to the longest history on the grid (730) plus the test period.
+    frame_days: int = 898
     min_coverage: float = 0.8
     burst_mean_days: int = 7
     end_date: str | None = None
@@ -50,9 +54,10 @@ class ScarcitySpec:
     allocation: Allocation = "equal"
 
     def __post_init__(self) -> None:
-        if self.history_days > self.frame_days:
+        if self.history_days + self.test_days > self.frame_days:
             raise ValueError(
-                f"history_days {self.history_days} exceeds frame_days {self.frame_days}"
+                f"history_days {self.history_days} plus test_days {self.test_days} "
+                f"exceeds frame_days {self.frame_days}"
             )
         if not 0.0 <= self.missing_rate < 1.0:
             raise ValueError(f"missing_rate must be in [0, 1), got {self.missing_rate}")
@@ -75,6 +80,7 @@ class Manifest:
     frame_end: str
     window_start: str
     window_end: str
+    test_start: str
     requested_per_stratum: dict
     actual_per_stratum: dict
     n_series_requested: int
@@ -115,6 +121,7 @@ def _selection_key(spec: ScarcitySpec) -> dict:
         "min_coverage": spec.min_coverage,
         "end_date": spec.end_date,
         "allocation": spec.allocation,
+        "test_days": spec.test_days,
     }
 
 
@@ -126,7 +133,9 @@ def sample(dataset: Dataset, spec: ScarcitySpec, stats: pd.DataFrame | None = No
     panel = dataset.panel
     frame_end = pd.Timestamp(spec.end_date) if spec.end_date else panel["ds"].max()
     frame_start = frame_end - pd.Timedelta(days=spec.frame_days - 1)
-    window_start = frame_end - pd.Timedelta(days=spec.history_days - 1)
+    # The window holds the sliding training span and the shared test period.
+    test_start = frame_end - pd.Timedelta(days=spec.test_days - 1)
+    window_start = test_start - pd.Timedelta(days=spec.history_days)
 
     frame = panel.loc[panel["ds"].between(frame_start, frame_end)]
     eligible = _eligible(frame, stats, spec)
@@ -146,7 +155,10 @@ def sample(dataset: Dataset, spec: ScarcitySpec, stats: pd.DataFrame | None = No
     window, injected = _inject_missingness(window, spec, injection_rng)
     final_absent = float(window["y"].isna().mean())
 
-    window_stats = classify(window)
+    # Classify on training data only. The window label is meant to be what an
+    # analyst holding the training window could determine, and they cannot see
+    # the evaluation period.
+    window_stats = classify(window.loc[window["ds"] < test_start])
     drift = _drift_rate(stats, window_stats, chosen)
 
     manifest = Manifest(
@@ -157,6 +169,7 @@ def sample(dataset: Dataset, spec: ScarcitySpec, stats: pd.DataFrame | None = No
         frame_end=str(frame_end.date()),
         window_start=str(window_start.date()),
         window_end=str(frame_end.date()),
+        test_start=str(test_start.date()),
         requested_per_stratum=requested,
         actual_per_stratum=actual,
         n_series_requested=spec.n_series,
