@@ -82,6 +82,13 @@ def to_daily_grid(long: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) ->
 
     Used by sources that simply omit rows rather than recording an explicit zero.
     """
+    clashes = long.duplicated(subset=["series_id", "ds"]).sum()
+    if clashes:
+        raise ValueError(
+            f"{clashes} duplicate (series_id, ds) rows reached to_daily_grid. "
+            f"Resolve them in the loader: a grid cannot hold two values for one day."
+        )
+
     dates = pd.date_range(start, end, freq="D")
     ids = pd.Index(long["series_id"].unique(), name="series_id")
     full = pd.MultiIndex.from_product([ids, dates], names=["series_id", "ds"])

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from .base import Dataset, to_daily_grid
@@ -36,7 +37,7 @@ def load(raw_dir: Path | None = None) -> Dataset:
         .astype("category")
     )
 
-    panel = rides[["series_id", "ds", "y"]]
+    panel = _resolve_conflicting_days(rides[["series_id", "ds", "y"]])
     # Stations open and close over a 20+ year window, so gaps here are genuine
     # absence rather than zero ridership. No leading-zero mask: a station that
     # opens mid-panel simply has no rows before it opened.
@@ -44,3 +45,25 @@ def load(raw_dir: Path | None = None) -> Dataset:
 
     static.index.name = "series_id"
     return Dataset(name="cta", panel=panel, static=static)
+
+
+def _resolve_conflicting_days(rides: pd.DataFrame) -> pd.DataFrame:
+    """Collapse repeated station-days, blanking the ones that disagree.
+
+    CTA re-reported roughly 600 station-days between 2011-07-01 and 2011-08-10
+    with two different ride counts for the same day. There is no basis for
+    preferring either figure, and averaging them would invent an observation
+    that was never recorded, so the affected days are marked unobserved. It is
+    under 0.1 percent of the panel.
+    """
+    rides = rides.drop_duplicates(subset=["series_id", "ds", "y"])
+
+    repeated = rides.duplicated(subset=["series_id", "ds"], keep=False)
+    if repeated.any():
+        n_days = rides.loc[repeated].groupby(["series_id", "ds"], observed=True).ngroups
+        print(f"  blanked {n_days} station-days with conflicting counts")
+        rides = rides.copy()
+        rides.loc[repeated, "y"] = np.nan
+        rides = rides.drop_duplicates(subset=["series_id", "ds"])
+
+    return rides
