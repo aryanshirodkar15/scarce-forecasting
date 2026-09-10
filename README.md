@@ -15,8 +15,8 @@ to characterize what drives it.
 
 ## Status
 
-Under construction, built in stages: **loaders (done)**, sampling protocol,
-metrics, model wrappers, runner, analysis.
+Under construction, built in stages: **loaders (done)**, **sampling protocol
+(done)**, metrics, model wrappers, runner, analysis.
 
 ## Datasets
 

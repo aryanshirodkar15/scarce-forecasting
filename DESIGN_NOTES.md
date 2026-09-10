@@ -91,3 +91,101 @@ system. There are three datasets and a dictionary of three functions covers it.
 Also no imputation, no outlier handling and no calendar feature engineering in
 the loaders: those are modeling choices, and burying them in the data layer would
 apply them unequally across models and quietly compromise the comparison.
+
+## Stage 2: the scarcity sampling protocol
+
+### Where the intermittency statistics are computed
+
+ADI and CV2 depend on how long you look. A series with four sales in sixty days
+gives a CV2 estimated from four numbers, which is noise wearing a quadrant label.
+Since the protocol deliberately varies history from 60 to 730 days, quadrant
+membership would move around as a side effect of the very axis being studied.
+
+So the classification is done twice. The full-history label is fixed per series
+and drives both the stratified sampling and the analysis grouping, which keeps
+history length and quadrant membership as independent axes. The within-window
+statistics are computed as well and recorded per cell, and the disagreement
+between the two is reported as `quadrant_drift_rate`.
+
+That second number turns a nuisance into a result. On synthetic series with
+cleanly separated quadrants it already shows the expected shape: zero drift at
+730 and 365 days, 2.5 percent at 120, and 7.5 to 10 percent at 60. Real catalogues
+are far less separable, so expect substantially more. The practical reading is
+that a practitioner classifying their own catalogue off six months of history
+gets the quadrant wrong a measurable fraction of the time, and picks the wrong
+forecasting method as a result.
+
+The label is never fed to a model. It only groups results, so it leaks nothing
+into the forecasts even though it uses information from outside the window.
+
+### Unobserved periods are dropped, not spanned
+
+ADI is periods divided by demand occurrences, counted over observed periods only.
+
+The alternative, counting an unobserved period as part of the interval, has a
+failure mode that would have quietly wrecked the grid. Under missingness at rate
+p, the demand count falls to (1-p)n while the period count stays at N, so ADI
+inflates by 1/(1-p). At the 30 percent cell that is a 43 percent inflation, more
+than enough to push series across the 1.32 cutoff. The missingness axis would
+have silently become an intermittency axis and the two effects would be
+inseparable.
+
+Dropping unobserved periods instead takes both counts down proportionally, so
+ADI is unchanged in expectation. The measured drift rate confirms it: 0.075 at
+zero missingness and 0.075 at 30 percent MCAR on the same series.
+
+Only strictly positive values count as demand occurrences, because Favorita
+encodes returns as negative sales and a return is not a demand.
+
+### Two seeds, so that comparisons are paired
+
+Series selection is keyed only on the sampling frame: dataset, series count,
+seed, frame length, coverage threshold and anchor date. It deliberately ignores
+history length and missingness. The result is that the same series appear in
+every cell along those two axes, so comparing 60 days against 730 days is a
+paired comparison on identical series rather than two independent draws. That is
+a substantial gain in power for free, and it removes series composition as an
+explanation for any difference found.
+
+Missingness injection is keyed on the entire spec, so each cell still gets its
+own independent gaps.
+
+### Eligibility is judged over the frame, not the history
+
+A series qualifies if it has at least 80 percent observed coverage over the
+730-day frame, regardless of how much history the cell actually hands to the
+model.
+
+Judging eligibility against `history_days` instead would have meant the 60-day
+cells drew from a much larger pool that included short-lived products, while the
+730-day cells drew only from long-lived ones. History length would then be
+confounded with series longevity, and any crossover found could be explained
+away by the population changing underneath the comparison. Fixing the frame
+costs some realism, since a real new business genuinely has only short-lived
+series, but it buys a clean attribution, which is what the research question
+needs.
+
+### Missingness shapes
+
+MCAR masks observed cells independently. Burst places contiguous runs with
+geometric lengths averaging seven days, which is what a real outage looks like:
+a till breaking, a store closing, an export job failing for a week. Both are
+trimmed to hit the requested rate exactly, so the two patterns are compared at
+identical volumes of absence and differ only in shape.
+
+Injection only ever masks cells that were observed, so the requested rate means
+the same thing regardless of how much native absence a dataset already carries.
+Native, injected and final absence rates are all recorded separately.
+
+Gaps are injected across the whole window including the part that later becomes
+the evaluation region. That is deliberate, since real evaluation periods have
+gaps too, but it puts an obligation on the metrics stage: NaN actuals must be
+excluded from every metric rather than treated as zeros.
+
+### Shortfall is recorded, not silently filled
+
+When a quadrant has fewer eligible series than the equal allocation asks for, the
+sampler takes what exists and records the gap. It does not top up from other
+quadrants, because that would silently unbalance the strata that the whole design
+depends on. Cells that cannot be filled are visible in the manifest instead of
+being quietly smaller than they claim.
