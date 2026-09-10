@@ -191,3 +191,52 @@ def test_unknown_pattern_is_rejected():
 def test_n_series_below_stratum_count_is_rejected():
     with pytest.raises(ValueError, match="at least 4"):
         spec(n_series=3)
+
+
+def test_proportional_allocation_mirrors_the_pool(dataset):
+    """The fixture is balanced, so proportional and equal agree on it."""
+    s = sample(dataset, spec(n_series=20, allocation="proportional"))
+    assert s.manifest.actual_per_stratum == {q: 5 for q in STRATA}
+
+
+def test_proportional_allocation_on_a_lopsided_pool():
+    """CTA is 98 percent smooth; equal allocation would return a handful of series."""
+    rng = np.random.default_rng(1)
+    ds = pd.date_range("2020-01-01", periods=DAYS, freq="D")
+    frames = [
+        pd.DataFrame({"series_id": f"smooth_{i}", "ds": ds, "y": _values("smooth", rng, DAYS)})
+        for i in range(40)
+    ]
+    frames.append(
+        pd.DataFrame({"series_id": "lumpy_0", "ds": ds, "y": _values("lumpy", rng, DAYS)})
+    )
+    panel = pd.concat(frames, ignore_index=True)
+    static = pd.DataFrame(index=pd.Index(panel["series_id"].unique(), name="series_id"))
+    static["kind"] = 1
+    lopsided = Dataset(name="lopsided", panel=panel, static=static)
+
+    equal = sample(lopsided, spec(dataset="lopsided", n_series=20))
+    assert equal.manifest.n_series_actual < 20  # three strata are nearly empty
+
+    proportional = sample(
+        lopsided, spec(dataset="lopsided", n_series=20, allocation="proportional")
+    )
+    assert proportional.manifest.n_series_actual == 20
+    assert proportional.manifest.actual_per_stratum["smooth"] >= 19
+
+
+def test_largest_remainder_sums_exactly(dataset):
+    for n in (7, 13, 19, 23):
+        s = sample(dataset, spec(n_series=n, allocation="proportional"))
+        assert sum(s.manifest.requested_per_stratum.values()) == n
+
+
+def test_allocation_changes_the_selection_key(dataset):
+    a = sample(dataset, spec(n_series=20))
+    b = sample(dataset, spec(n_series=20, allocation="proportional"))
+    assert a.manifest.selection_seed != b.manifest.selection_seed
+
+
+def test_unknown_allocation_is_rejected():
+    with pytest.raises(ValueError, match="unknown allocation"):
+        spec(allocation="stratified-ish")

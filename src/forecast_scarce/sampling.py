@@ -26,6 +26,7 @@ from .intermittency import classify
 
 STRATA = ("smooth", "erratic", "intermittent", "lumpy")
 Pattern = Literal["none", "mcar", "burst"]
+Allocation = Literal["equal", "proportional"]
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,10 @@ class ScarcitySpec:
     min_coverage: float = 0.8
     burst_mean_days: int = 7
     end_date: str | None = None
+    # "equal" gives every quadrant the same count, which maximizes power per
+    # quadrant. "proportional" mirrors the dataset's own mix, which is the only
+    # workable mode for a panel like CTA where 98 percent of series are smooth.
+    allocation: Allocation = "equal"
 
     def __post_init__(self) -> None:
         if self.history_days > self.frame_days:
@@ -55,7 +60,9 @@ class ScarcitySpec:
             raise ValueError(f"unknown missing_pattern {self.missing_pattern!r}")
         if self.missing_pattern == "none" and self.missing_rate:
             raise ValueError("missing_rate is nonzero but missing_pattern is 'none'")
-        if self.n_series < len(STRATA):
+        if self.allocation not in ("equal", "proportional"):
+            raise ValueError(f"unknown allocation {self.allocation!r}")
+        if self.allocation == "equal" and self.n_series < len(STRATA):
             raise ValueError(f"n_series must be at least {len(STRATA)} to fill every stratum")
 
 
@@ -107,6 +114,7 @@ def _selection_key(spec: ScarcitySpec) -> dict:
         "frame_days": spec.frame_days,
         "min_coverage": spec.min_coverage,
         "end_date": spec.end_date,
+        "allocation": spec.allocation,
     }
 
 
@@ -188,16 +196,14 @@ def _eligible(frame: pd.DataFrame, stats: pd.DataFrame, spec: ScarcitySpec) -> p
 def _stratified_draw(
     eligible: pd.DataFrame, spec: ScarcitySpec, rng: np.random.Generator
 ) -> tuple[list[str], dict, dict]:
-    """Equal allocation across the four quadrants, remainder spread deterministically."""
-    base, remainder = divmod(spec.n_series, len(STRATA))
-    requested = {q: base for q in STRATA}
-    for q in STRATA[:remainder]:
-        requested[q] += 1
+    """Allocate across quadrants, then draw within each."""
+    pools = {q: eligible.index[eligible["quadrant"] == q].to_numpy() for q in STRATA}
+    requested = _allocate(spec, {q: len(p) for q, p in pools.items()})
 
     chosen: list[str] = []
     actual: dict[str, int] = {}
     for quadrant in STRATA:
-        pool = eligible.index[eligible["quadrant"] == quadrant].to_numpy()
+        pool = pools[quadrant]
         want = requested[quadrant]
         take = min(want, len(pool))
         if take:
@@ -207,6 +213,33 @@ def _stratified_draw(
         actual[quadrant] = take
 
     return chosen, requested, actual
+
+
+def _allocate(spec: ScarcitySpec, pool_sizes: dict[str, int]) -> dict[str, int]:
+    """How many series to ask of each quadrant.
+
+    Proportional uses largest remainder so the parts sum to exactly n_series
+    rather than drifting by a couple of series through rounding.
+    """
+    if spec.allocation == "equal":
+        base, remainder = divmod(spec.n_series, len(STRATA))
+        requested = {q: base for q in STRATA}
+        for q in STRATA[:remainder]:
+            requested[q] += 1
+        return requested
+
+    total = sum(pool_sizes.values())
+    if total == 0:
+        return {q: 0 for q in STRATA}
+
+    exact = {q: spec.n_series * pool_sizes[q] / total for q in STRATA}
+    requested = {q: int(exact[q]) for q in STRATA}
+
+    leftover = spec.n_series - sum(requested.values())
+    ranked = sorted(STRATA, key=lambda q: (-(exact[q] - int(exact[q])), STRATA.index(q)))
+    for q in ranked[:leftover]:
+        requested[q] += 1
+    return requested
 
 
 def _inject_missingness(

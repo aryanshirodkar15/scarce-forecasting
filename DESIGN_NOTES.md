@@ -189,3 +189,46 @@ sampler takes what exists and records the gap. It does not top up from other
 quadrants, because that would silently unbalance the strata that the whole design
 depends on. Cells that cannot be filled are visible in the manifest instead of
 being quietly smaller than they claim.
+
+## Stage 2 addendum: what real data changed
+
+### Two allocation modes, because the control dataset forced it
+
+CTA classifies as 145 smooth, 1 erratic, 1 intermittent and 0 lumpy out of 148
+stations. That is not a defect in the data or the classifier. Rail ridership is a
+daily continuous process and simply has no intermittency in it.
+
+The consequence is that equal allocation degenerates there: asking for 20 series
+returns 6, because three of the four strata are empty. So allocation is now a
+switch. M5 and Favorita use equal allocation, which maximizes power per quadrant
+and is the point of stratifying. CTA uses proportional, which for it means
+effectively all-smooth.
+
+This changes CTA's role in the benchmark, for the better. It is not a fourth
+source of stratified evidence, it is the contrast case: what the crossover point
+looks like when there is no intermittency present at all. If deep models hold
+their advantage further down the data-volume curve on CTA than on M5, that is
+direct evidence that intermittency rather than sheer volume is what breaks them.
+
+Proportional allocation uses largest remainder so the parts sum to exactly the
+requested count instead of drifting through rounding.
+
+### Quadrant drift is driven by intermittency, not by short windows alone
+
+On CTA the drift rate is 0.000 at every history length including 60 days. Smooth
+series are robustly classified from very little data. The drift seen on synthetic
+intermittent and lumpy series is therefore not a generic small-sample artifact;
+it is specifically the instability of CV2 estimated from a handful of demand
+occurrences. That sharpens the claim: it is not that short histories mislabel
+everything, it is that short histories mislabel exactly the series where the
+choice of forecasting method matters most.
+
+### A defect only real data could show
+
+The CTA feed reports 1,236 rows as duplicate station-days, all inside a 41-day
+window in summer 2011, each giving two different ride counts for the same day.
+Around 0.09 percent of the panel, median disagreement 0.3 percent, maximum 20
+percent. No basis exists for preferring either figure and averaging them would
+invent an observation, so those days are marked unobserved. `to_daily_grid` now
+rejects unresolved duplicates with an actionable message rather than surfacing a
+cryptic pandas reindexing error.
