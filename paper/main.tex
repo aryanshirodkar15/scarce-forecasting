@@ -243,7 +243,7 @@ specification, so each cell still receives independent gaps.
 \subsection{Frame-based eligibility}
 
 A series is eligible if it has at least $80\%$ observed coverage over a fixed
-730-day frame, regardless of how much history the cell subsequently hands to the
+898-day frame, the longest history on the grid plus the shared test period, regardless of how much history the cell subsequently hands to the
 model. Judging eligibility against \texttt{history\_days} instead would let short
 cells draw from a larger pool containing short-lived products while long cells
 drew only from long-lived ones, entangling history length with series longevity.
@@ -350,11 +350,45 @@ obtained by bootstrap. Pairwise comparisons use Diebold--Mariano
 \citep{harvey1997testing}, and the false discovery rate across the grid is
 controlled by Benjamini--Hochberg \citep{benjamini1995controlling}.
 
-\gap{The cross-validation split strategy is not yet fixed. The open tension is
-that rolling-origin folds on a 60-day window are necessarily few and short, so
-holding the fold \emph{count} constant across history lengths and holding the
-fold \emph{size} constant are mutually exclusive, and they answer different
-questions.}
+\subsection{Splitting: a shared evaluation period}
+\label{sec:splits}
+
+Carving rolling-origin folds out of each window separately breaks the central
+comparison in two ways simultaneously.
+
+The first is correlation. With a 28-day horizon, a 60-day window leaves roughly
+32 days for training and accommodates only a couple of origins, forcing test
+windows to overlap heavily; a 730-day window accommodates dozens of disjoint
+folds. Overlapping test windows are correlated, which inflates the effective
+sample size assumed by Diebold--Mariano tests and bootstrap intervals, and
+inflates it by a different amount in every cell. The inferential machinery would
+be miscalibrated inconsistently along the very axis under study.
+
+The second is that cells would be scored on different days. A metric difference
+between a 60-day cell and a 730-day cell would then confound the effect of
+training volume with the effect of being graded on different data.
+
+Both problems dissolve by moving the split outside the window. We fix a single
+evaluation period in calendar time, shared by every cell: identical dates,
+identical series, identical targets. History length then governs only how much
+training data precedes that period. This is the standard construction of a
+learning-curve experiment, and it renders the crossover literally as two curves
+meeting over a shared abscissa.
+
+The training window slides rather than expands. Under an expanding window a cell
+labelled 60 days would have observed 200 days by the final fold, and the label
+would be false. Sliding at fixed width holds the training size at exactly
+$H$ observations in every fold. We use $h = 28$ with six folds, giving a 168-day
+evaluation period; $h = 28$ matches the M5 convention, preserving
+commensurability with published results, and corresponds to a monthly reorder
+cycle.
+
+One property deserves explicit statement because it superficially resembles
+leakage and is not. From the second fold onward, the training window contains
+days that were the preceding fold's test targets. This is precisely what
+rolling-origin evaluation means \citep{tashman2000}: at each origin the
+forecaster may use every actual observed before that origin, and no fold is ever
+evaluated on data it was trained on.
 
 \section{Protocol Validation}
 \label{sec:validation}
@@ -433,6 +467,17 @@ of Table~\ref{tab:drift} provide the check: at 60 days of history, drift is
 $0.075$ both without missingness and at $30\%$ MCAR. Injecting gaps into nearly a
 third of the panel does not reshuffle quadrant membership. Under the conventional
 definition the same manipulation would have inflated ADI by $43\%$.
+
+\subsection{The pipeline reproduces the intended design on real data}
+
+Sampling, splitting and metric evaluation were run end to end on the CTA panel at
+two history lengths. Both cells score an identical 1{,}344 points over the same
+evaluation period beginning 2026-01-14, while training on 480 and 5{,}840
+observations respectively. Identical targets under differing training volume is
+the design intent of Sections~\ref{sec:protocol} and~\ref{sec:splits}, here
+confirmed against real data rather than asserted. The forecaster used was
+seasonal naive, employed solely to exercise the pipeline; its accuracy is not
+reported and is not a result.
 
 \subsection{A defect visible only in real data}
 
