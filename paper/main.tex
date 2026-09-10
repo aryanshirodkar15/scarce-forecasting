@@ -1,0 +1,498 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{times}
+\usepackage{microtype}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{natbib}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{caption}
+\usepackage[colorlinks=true,allcolors=black!70]{hyperref}
+
+\bibliographystyle{plainnat}
+
+% Placeholders are deliberately loud. Nothing in this paper may be mistaken for a
+% result until a result exists.
+\definecolor{gapbg}{RGB}{255,244,230}
+\definecolor{gaprule}{RGB}{200,120,0}
+\newcommand{\gap}[1]{%
+  \par\vspace{0.6em}\noindent
+  \colorbox{gapbg}{%
+    \parbox{\dimexpr\linewidth-2\fboxsep}{%
+      \color{gaprule}\rule{\linewidth}{0.8pt}\\[0.2em]
+      \textcolor{gaprule}{\textbf{[PENDING EXPERIMENT]}}\ \color{black}#1\\[0.3em]
+      \color{gaprule}\rule{\linewidth}{0.8pt}}}%
+  \par\vspace{0.6em}}
+
+\title{\bf When Does Deep Forecasting Stop Paying?\\
+A Benchmark for Demand Forecasting Under Data Scarcity}
+
+\author{Aryan Shirodkar\\
+\normalsize \textit{Affiliation to be completed}\\
+\normalsize \texttt{github.com/aryanshirodkar15/scarce-forecasting}}
+
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Modern deep forecasting models are evaluated almost exclusively in the
+enterprise-scale regime: thousands of series, years of clean daily history, and
+curated preprocessing. The businesses that most need demand forecasting operate
+nowhere near that regime. A small retailer typically holds six to eighteen months
+of history across dozens of stock-keeping units, punctuated by stockouts,
+reporting gaps and long runs of zero demand. Whether the accuracy advantages
+reported for deep architectures survive this transition is, to our knowledge,
+untested in a controlled way.
+
+We introduce a \emph{scarcity sampling protocol} that turns data scarcity into a
+measurable experimental factor rather than a property of whichever dataset
+happens to be at hand. The protocol varies history length, series count,
+missingness rate and missingness shape on an explicit grid, stratifies series by
+the Syntetos--Boylan demand-pattern quadrants, and emits a manifest that makes
+every cell exactly reproducible. Two design features are central: unobserved
+periods are held distinct from observed zeros throughout, and series selection is
+seeded independently of the scarcity axes so that comparisons across history
+lengths are paired rather than confounded.
+
+\gap{The empirical crossover results, the model comparison, and the attribution
+stability analysis are not yet available. This draft presents the protocol and
+its validation. No performance numbers appear anywhere in this document, and none
+should be inferred.}
+\end{abstract}
+
+\section{Introduction}
+
+Forecasting research has converged on a small number of large benchmarks. The M5
+competition \citep{makridakis2022m5} provides 30{,}490 item--store series with
+1{,}941 daily observations each; deep architectures such as N-BEATS
+\citep{oreshkin2020nbeats} and the Temporal Fusion Transformer
+\citep{lim2021tft} report their headline results on data of this scale. The
+implicit claim carried by these results is that learned representations
+generalize across a large pool of related series, and that the pooling is what
+buys the accuracy.
+
+That claim, if true, has an immediate corollary that the literature rarely
+states: the advantage should decay as the pool shrinks. A firm with forty SKUs
+and nine months of history is not a scaled-down M5. It is a qualitatively
+different estimation problem, in which the number of free parameters in a
+transformer may exceed the number of observations available to fit them, and in
+which the classical intermittent-demand estimators of Croston
+\citep{croston1972} and its successors \citep{syntetos2005accuracy,teunter2011}
+were designed to operate.
+
+Practitioners in this regime receive little guidance. The question they face is
+concrete and answerable: \emph{at what data volume does a deep model stop
+outperforming a classical statistical baseline, and what governs that
+threshold?} Answering it requires more than re-running existing benchmarks on
+subsets, because subsetting introduces confounds that are easy to miss. Shorter
+windows change which series are eligible; injected missingness perturbs the very
+statistics used to categorize demand patterns; and independent resampling across
+grid cells discards the statistical power that paired designs provide.
+
+\paragraph{Contributions.} This work makes the following contributions.
+\begin{enumerate}
+  \item A \textbf{scarcity sampling protocol} (Section~\ref{sec:protocol}) that
+    treats history length, series count, missingness rate and missingness shape
+    as controlled experimental factors, stratified by demand pattern, with
+    deterministic manifests for exact reproduction of any grid cell.
+  \item A \textbf{dual classification scheme} that separates the stable
+    demand-pattern label used for stratification from the label an analyst could
+    actually compute in the scarce regime, and reports the disagreement between
+    them as a quantity of interest rather than as noise.
+  \item An analysis of \textbf{confounds specific to scarcity experiments},
+    including a missingness treatment that provably preserves the average
+    inter-demand interval in expectation, and a frame-based eligibility rule that
+    prevents history length from becoming entangled with series longevity.
+  \item \gap{An empirical characterization of the crossover point across three
+    datasets, five seeds and the full scarcity grid, together with an analysis of
+    SHAP attribution stability under scarcity.}
+\end{enumerate}
+
+\section{Related Work}
+
+\paragraph{Intermittent demand.} Croston's method \citep{croston1972} decomposes
+intermittent series into demand sizes and inter-demand intervals, estimating each
+separately. Syntetos and Boylan identified and corrected a bias in the original
+estimator \citep{syntetos2005accuracy}, and Teunter, Syntetos and Babai proposed
+the TSB variant to handle obsolescence \citep{teunter2011}. These methods remain
+strong baselines precisely because they encode structural assumptions that
+compensate for scarce data.
+
+\paragraph{Demand categorization.} \citet{syntetos2005categorization} partition
+series by average inter-demand interval (ADI) and the squared coefficient of
+variation of demand sizes ($\mathrm{CV}^2$), yielding the smooth, erratic,
+intermittent and lumpy quadrants used throughout this work. \citet{kostenko2006note}
+propose an alternative boundary. We adopt the standard cutoffs, since
+data-driven boundaries would make quadrants incomparable across datasets.
+
+\paragraph{Deep forecasting.} N-BEATS \citep{oreshkin2020nbeats} and the
+Temporal Fusion Transformer \citep{lim2021tft} represent two dominant families of
+deep forecaster. Gradient-boosted trees \citep{ke2017lightgbm} occupy a middle
+ground and were heavily represented among M5 winners
+\citep{makridakis2022m5}. Our interest is not in any one architecture but in how
+the ordering among these families changes with data volume.
+
+\paragraph{Evaluation.} We follow \citet{hyndman2006another} in adopting scaled
+errors, and \citet{tashman2000} and \citet{bergmeir2012} in preferring
+rolling-origin evaluation to a single holdout. Pairwise comparisons use the
+Diebold--Mariano test \citep{diebold1995comparing} with the small-sample
+correction of \citet{harvey1997testing}, controlled across the grid by the
+Benjamini--Hochberg procedure \citep{benjamini1995controlling}.
+
+\paragraph{The gap.} Sample efficiency is studied extensively in general machine
+learning but rarely in forecasting, where the dominant benchmarks fix the data
+volume by construction. We are not aware of a controlled study that varies data
+volume as an experimental factor while holding the series population, the
+evaluation protocol and the tuning budget constant.
+
+\section{The Scarcity Sampling Protocol}
+\label{sec:protocol}
+
+\subsection{Panel representation}
+
+Every dataset is normalized to a long panel of triples
+$(\text{series}, t, y)$ on a regular daily index. The representation makes one
+distinction that the rest of the protocol depends on:
+\[
+y_{i,t} =
+\begin{cases}
+\text{NaN} & \text{the demand process was not observable at } t,\\
+0 & \text{the process was observed and produced zero demand.}
+\end{cases}
+\]
+
+Raw retail data conflates these. An item that launches midway through the M5
+window carries a long run of leading zeros that are not demand observations at
+all; the Favorita export omits rows entirely on days without a sale, so absence
+is ambiguous between a closed store and genuine zero demand. Conflating the two
+inflates ADI, distorts $\mathrm{CV}^2$, and pushes series into the wrong
+quadrant. Because the benchmark stratifies on exactly these statistics, the error
+would not stay local: it would propagate into every reported result. Loaders
+therefore trim each series to its first strictly positive observation and mark
+everything prior as unobserved.
+
+\subsection{Demand-pattern stratification}
+
+For each series we compute ADI as the number of observed periods divided by the
+number of demand occurrences, and $\mathrm{CV}^2$ as the squared coefficient of
+variation of the strictly positive demand sizes, and assign a quadrant using the
+standard cutoffs $\mathrm{ADI} = 1.32$ and $\mathrm{CV}^2 = 0.49$
+\citep{syntetos2005categorization}. Series with fewer than five demand
+occurrences are marked insufficient and excluded from the sampling frame, since
+$\mathrm{CV}^2$ estimated from fewer points is not an estimate of anything.
+
+Classification is performed twice, and this is deliberate. The
+\emph{frame label} is computed over full history, is fixed per series, and drives
+both stratified sampling and analysis grouping. The \emph{window label} is
+recomputed inside each sampled window and reflects what an analyst holding only
+that window could determine. The frame label uses information outside the
+sampled window, but it is never supplied to any model and therefore leaks nothing
+into forecasts; it functions purely as a blocking factor, which keeps history
+length and quadrant membership independent. The disagreement between the two
+labels is reported per cell as the \emph{quadrant drift rate}, and is treated as
+a finding in its own right.
+
+\subsection{Missingness and the ADI invariance}
+\label{sec:adi}
+
+Missingness is injected at rates $\{0, 0.05, 0.15, 0.30\}$ under two patterns.
+MCAR masks observed cells independently. Burst masks contiguous runs with
+geometric lengths averaging seven days, approximating the failure modes that
+actually produce gaps in small-business data: a till failing, a store closing, an
+export job silently breaking for a week. Both are trimmed to the requested rate
+exactly, so the patterns are compared at identical volumes of absence and differ
+only in shape. Injection masks only cells that were observed, so the requested
+rate carries the same meaning regardless of how much native absence a dataset
+already contains.
+
+The definition of ADI in the preceding subsection is not the conventional one,
+and the reason is a confound that would otherwise be fatal to the design.
+Consider counting unobserved periods as part of the inter-demand interval. Under
+missingness at rate $p$, the demand count falls in expectation to $(1-p)n$ while
+the period count remains $N$, giving
+\[
+\mathbb{E}[\widehat{\mathrm{ADI}}] \;=\; \frac{N}{(1-p)n} \;=\; \frac{\mathrm{ADI}}{1-p},
+\]
+an inflation of $43\%$ at $p = 0.30$. That is far more than enough to drive
+series across the $1.32$ cutoff. The missingness axis of the grid would silently
+become a second intermittency axis, and the two effects would be inseparable in
+the results. Restricting the period count to observed periods reduces both
+numerator and denominator proportionally, so
+$\mathbb{E}[\widehat{\mathrm{ADI}}] = N/n = \mathrm{ADI}$ and the axes stay
+orthogonal. Section~\ref{sec:validation} verifies this empirically.
+
+\subsection{Paired seeding}
+
+Each cell draws on two independent seeds. The \emph{selection seed} is derived
+from the sampling frame alone: dataset, series count, replicate index, frame
+length, coverage threshold, anchor date and allocation mode. It deliberately
+excludes history length and every missingness parameter. Consequently the same
+series appear in every cell along those axes, and a comparison between a 60-day
+cell and a 730-day cell is a paired comparison on identical series rather than
+two independent draws. This is a substantial gain in statistical power at no
+cost, and it removes changes in series composition as a competing explanation for
+any crossover observed. The \emph{injection seed} is derived from the complete
+specification, so each cell still receives independent gaps.
+
+\subsection{Frame-based eligibility}
+
+A series is eligible if it has at least $80\%$ observed coverage over a fixed
+730-day frame, regardless of how much history the cell subsequently hands to the
+model. Judging eligibility against \texttt{history\_days} instead would let short
+cells draw from a larger pool containing short-lived products while long cells
+drew only from long-lived ones, entangling history length with series longevity.
+The cost is some realism, since a genuinely new business does hold short-lived
+series; the benefit is that an observed crossover is attributable to history
+length rather than to the population shifting underneath the comparison.
+
+\subsection{Allocation and shortfall}
+
+Under \emph{equal} allocation each quadrant receives $n/4$ series, which
+maximizes power per quadrant and is the purpose of stratifying. Under
+\emph{proportional} allocation quadrants receive shares matching the eligible
+pool, resolved by largest remainder. Proportional allocation exists because it is
+required: as Section~\ref{sec:validation} shows, one of our datasets is almost
+entirely smooth and cannot support equal allocation at all. When a quadrant holds
+fewer eligible series than requested, the sampler takes what exists and records
+the deficit in the manifest rather than topping up from other quadrants, which
+would silently unbalance the strata the design rests on.
+
+\begin{algorithm}[t]
+\caption{Drawing one cell of the scarcity grid}
+\label{alg:sample}
+\begin{algorithmic}[1]
+\Require dataset $D$, specification $s$, frame labels $L$
+\State $\text{frame} \gets$ window of $s.\text{frame\_days}$ ending at $s.\text{end\_date}$
+\State $E \gets \{i : \text{coverage}_i(\text{frame}) \ge s.\text{min\_coverage},\ L_i \ne \text{insufficient}\}$
+\State $r \gets \textsc{Allocate}(s, \{|E_q|\}_{q \in Q})$ \Comment{equal or proportional}
+\State $\rho_{\text{sel}} \gets \textsc{Rng}(\textsc{Hash}(\textsc{FrameKey}(s)))$ \Comment{excludes history and missingness}
+\State $S \gets \bigcup_{q \in Q} \textsc{DrawWithoutReplacement}(E_q, \min(r_q, |E_q|), \rho_{\text{sel}})$
+\State $W \gets$ last $s.\text{history\_days}$ of frame, restricted to $S$
+\State $\rho_{\text{inj}} \gets \textsc{Rng}(\textsc{Hash}(s))$ \Comment{full specification}
+\State $W \gets \textsc{InjectMissingness}(W, s.\text{rate}, s.\text{pattern}, \rho_{\text{inj}})$
+\State $L^{W} \gets \textsc{Classify}(W)$ \Comment{window labels, for drift}
+\State \Return $W$, manifest containing $S$, $r$, realized rates, $\textsc{Drift}(L, L^{W})$, panel digest
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Reproducibility}
+
+Each cell emits a manifest recording the full specification, both derived seeds,
+window boundaries, requested and realized allocation per quadrant, any shortfall,
+native and injected and final absence rates, window quadrant counts, the drift
+rate, the selected series identifiers, and a SHA-256 digest of the resulting
+panel. Datasets carry two content hashes, one over the raw download and one over
+the normalized panel, so that an upstream file change and a change in our own
+normalization code are distinguishable. Results are comparable only when both
+still match, and overriding a mismatch requires an explicit flag.
+
+\section{Experimental Setup}
+
+\subsection{Datasets}
+
+Three datasets span retail and non-retail demand. Table~\ref{tab:datasets}
+summarizes them; only CTA has been ingested at the time of writing.
+
+\begin{table}[t]
+\centering
+\caption{Datasets. Statistics for CTA are measured from the normalized panel.
+M5 and Favorita figures are as documented by their sources and are not yet
+independently verified in this pipeline.}
+\label{tab:datasets}
+\small
+\begin{tabular}{llrrl}
+\toprule
+Dataset & Domain & Series & Span & Status \\
+\midrule
+M5 \citep{makridakis2022m5} & Retail, hierarchical & 30{,}490 & 1{,}941 d & Not yet ingested \\
+Favorita & Grocery, perishables & $\sim$200{,}000 & 1{,}684 d & Not yet ingested \\
+CTA & Rail ridership & 148 & 9{,}312 d & Ingested \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+CTA rail station entries serve as a non-retail control. A single aggregate
+ridership series would have been simpler to obtain but useless here, since the
+protocol samples between 10 and 1{,}000 series; the station-level panel supports
+the identical protocol and additionally contains a genuine structural break in
+2020.
+
+\subsection{Models}
+
+Classical baselines comprise seasonal naive, ETS and auto-ARIMA
+\citep{hyndman2008automatic}, with Croston \citep{croston1972} and TSB
+\citep{teunter2011} for intermittent series. The machine-learning tier is
+LightGBM \citep{ke2017lightgbm} over lag, rolling and calendar features. The deep
+tier is N-BEATS \citep{oreshkin2020nbeats} and the Temporal Fusion Transformer
+\citep{lim2021tft}. All models share a uniform fit/predict interface, an
+identical feature budget and an identical tuning protocol.
+
+\subsection{Metrics and inference}
+
+MASE and RMSSE \citep{hyndman2006another} are primary, WAPE is secondary, and
+pinball loss is reported for quantile-capable models. MAPE is not used anywhere,
+as it is undefined on the zero-demand periods that dominate the intermittent
+regime. Because the protocol injects gaps across the entire window including the
+evaluation region, unobserved actuals are excluded from every metric rather than
+coerced to zero; treating them as zeros would systematically favor whichever
+model degrades most gracefully on missing inputs.
+
+Evaluation is rolling-origin \citep{tashman2000,bergmeir2012} with at least five
+replicates per configuration. Confidence intervals on metric differences are
+obtained by bootstrap. Pairwise comparisons use Diebold--Mariano
+\citep{diebold1995comparing} with the Harvey--Leybourne--Newbold correction
+\citep{harvey1997testing}, and the false discovery rate across the grid is
+controlled by Benjamini--Hochberg \citep{benjamini1995controlling}.
+
+\gap{The cross-validation split strategy is not yet fixed. The open tension is
+that rolling-origin folds on a 60-day window are necessarily few and short, so
+holding the fold \emph{count} constant across history lengths and holding the
+fold \emph{size} constant are mutually exclusive, and they answer different
+questions.}
+
+\section{Protocol Validation}
+\label{sec:validation}
+
+No model has been fit. This section reports only measurements of the sampling
+protocol itself, which is what is currently implemented and tested.
+
+\subsection{The non-retail control has no intermittency}
+
+Applying the classifier to the full CTA panel yields the mix in
+Table~\ref{tab:cta-quadrants}: essentially every station is smooth. This is not a
+defect. Rail ridership is a daily continuous process, and the classifier
+correctly reports that it contains no intermittency to stratify on.
+
+\begin{table}[h]
+\centering
+\caption{Syntetos--Boylan quadrants over full CTA history (148 stations,
+2001-01-01 to 2026-06-30).}
+\label{tab:cta-quadrants}
+\small
+\begin{tabular}{lrrrrr}
+\toprule
+& Smooth & Erratic & Intermittent & Lumpy & Insufficient \\
+\midrule
+Stations & 145 & 1 & 1 & 0 & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The consequence is methodological. Equal allocation degenerates on CTA: a request
+for 20 series returns 6, because three strata are empty. This is what motivated
+proportional allocation, and it repositions CTA within the benchmark. It is not a
+third source of stratified evidence but a contrast case, establishing what the
+crossover looks like when intermittency is absent. If deep models retain their
+advantage further down the volume curve on CTA than on M5, that is direct
+evidence that intermittency rather than sheer data volume is the operative
+mechanism.
+
+\subsection{Quadrant drift is an intermittency effect, not a window-length effect}
+
+Table~\ref{tab:drift} reports drift rates. On real CTA data drift is zero at every
+history length including 60 days: smooth series are classified robustly from very
+little data. On synthetic panels containing all four quadrants, drift rises as
+history shrinks, reaching $7.5\%$ at 60 days.
+
+Taken together these sharpen the claim available to us. Short histories do not
+mislabel series indiscriminately; they mislabel specifically those series whose
+$\mathrm{CV}^2$ rests on a handful of demand occurrences, which are exactly the
+series for which the choice of forecasting method matters most.
+
+\begin{table}[h]
+\centering
+\caption{Quadrant drift rate, the fraction of sampled series whose quadrant
+changes when estimated from the window rather than from full history. Synthetic
+panels use 25 series per quadrant with cleanly separated generators and therefore
+represent a lower bound; real catalogues sit closer to the cutoffs.}
+\label{tab:drift}
+\small
+\begin{tabular}{lcccc}
+\toprule
+History (days) & 60 & 120 & 365 & 730 \\
+\midrule
+CTA, no missingness            & 0.000 & 0.000 & 0.000 & 0.000 \\
+CTA, 30\% burst                & 0.000 & 0.000 & 0.000 & 0.000 \\
+Synthetic, no missingness      & 0.075 & 0.025 & 0.000 & 0.000 \\
+Synthetic, 30\% MCAR           & 0.075 & 0.000 & 0.000 & 0.000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{The ADI invariance holds empirically}
+
+Section~\ref{sec:adi} argued that restricting the period count to observed
+periods leaves ADI unchanged in expectation under missingness. The final two rows
+of Table~\ref{tab:drift} provide the check: at 60 days of history, drift is
+$0.075$ both without missingness and at $30\%$ MCAR. Injecting gaps into nearly a
+third of the panel does not reshuffle quadrant membership. Under the conventional
+definition the same manipulation would have inflated ADI by $43\%$.
+
+\subsection{A defect visible only in real data}
+
+The CTA feed contains 1{,}236 rows that duplicate a station--day, all within a
+41-day window in mid-2011, each reporting a different ride count for the same
+day. The affected share is $0.09\%$ of the panel, with median disagreement
+$0.3\%$ and maximum $20\%$. No principled basis exists for preferring either
+figure, and averaging them would fabricate an observation that was never
+recorded, so the affected station--days are marked unobserved. We note this less
+for its magnitude than for its provenance: it was invisible to a test suite
+built on synthetic panels and surfaced within seconds of contact with the real
+feed.
+
+\section{Results}
+
+\gap{This section will report the crossover analysis across the full scarcity
+grid: metric surfaces by history length and series count for each model family,
+stratified by demand-pattern quadrant; bootstrap confidence intervals on metric
+differences; Diebold--Mariano tests with multiplicity control; and SHAP
+attribution stability across seeds and scarcity regimes. None of this has been
+run. Deliberately left empty rather than estimated, projected or illustrated.}
+
+\section{Limitations}
+
+Several limitations are known in advance and are properties of the design rather
+than oversights.
+
+\textbf{Frame-based eligibility trades realism for attribution.} Requiring 730
+days of coverage excludes precisely the short-lived products a genuinely new
+business would carry. The benchmark therefore measures the effect of \emph{showing
+a model less history}, not the effect of \emph{a business being young}. These are
+different questions and only the first is cleanly identifiable.
+
+\textbf{Stratification uses out-of-window information.} The frame label could not
+be computed by a practitioner holding only the sampled window. It is never given
+to a model, so no forecast is contaminated, but the strata are in this sense
+idealized. The drift rate is reported precisely to quantify what that idealization
+conceals.
+
+\textbf{The non-retail control is not stratified.} CTA is almost entirely smooth
+and contributes evidence only about the smooth quadrant.
+
+\textbf{Injected missingness is not real missingness.} MCAR and geometric bursts
+are tractable idealizations. Real gaps correlate with demand itself: stockouts
+suppress recorded sales precisely when demand is high, which is missingness not
+at random \citep{little2019}. Our design cannot capture that dependence and will
+therefore, if anything, understate the difficulty of the real problem.
+
+\section{Conclusion}
+
+\gap{Conclusions require results. This section is intentionally empty.}
+
+\section*{Reproducibility}
+
+All code, configurations and design rationale are available at
+\url{https://github.com/aryanshirodkar15/scarce-forecasting}. Raw data is not
+redistributed; download scripts and content hashes are provided so that any
+reported figure can be traced to the exact bytes that produced it. Every grid
+cell is reconstructible from its manifest.
+
+\bibliography{refs}
+
+\end{document}

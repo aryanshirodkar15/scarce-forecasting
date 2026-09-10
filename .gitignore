@@ -6,3 +6,8 @@ __pycache__/
 .ruff_cache/
 .DS_Store
 *.egg-info/
+paper/*.log
+paper/*.blg
+paper/*.aux
+paper/*.out
+paper/*.bbl

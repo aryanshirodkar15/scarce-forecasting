@@ -1,4 +1,4 @@
-.PHONY: setup data test lint run-small run-full
+.PHONY: setup data test lint run-small run-full paper
 
 setup:
 	uv sync --extra dev
@@ -17,3 +17,6 @@ run-small:
 
 run-full:
 	@echo "not implemented until the runner stage"
+
+paper:
+	cd paper && tectonic -X compile main.tex
