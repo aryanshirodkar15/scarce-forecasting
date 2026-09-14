@@ -304,3 +304,47 @@ At 60 and 730 days of history the pipeline scores an identical 1,344 points on
 the same test period beginning 2026-01-14, while training on 480 and 5,840 rows
 respectively. Identical targets and differing training volume is precisely the
 design intent, confirmed on real data rather than asserted.
+
+## Stage 4a: features for the tabular models
+
+### Anchored at the origin, not at the target
+
+Each row is one (series, target date) pair, and every history feature is computed
+as of the forecast origin, with the distance to the target carried as a `horizon`
+feature.
+
+The alternative, anchoring lags to the target date, forces lags of at least the
+horizon, so a 28-day forecast loses `lag_1` entirely, which is the single most
+informative feature for a smooth series. Origin anchoring keeps it, needs one
+model rather than one per horizon, and avoids the compounding error of feeding
+predictions back recursively.
+
+It is also the fairer comparison. N-BEATS and the Temporal Fusion Transformer
+emit all 28 steps at once from data available at the origin. A recursive LightGBM
+would be allowed to consume its own predictions, which the deep models never do,
+so the two would not be answering the same question.
+
+### One feature set for every cell
+
+The columns are identical in all 4 history lengths. Where a window cannot support
+a feature, the value is NaN, which LightGBM routes natively at the cost of a
+zero-gain split.
+
+Letting the feature set shrink with the history was tempting and is wrong here.
+It would make the 60-day model and the 730-day model different models, so part of
+any measured gap would be the feature set we chose rather than the data volume,
+which is the confound the whole design exists to avoid. It would also make the
+SHAP attribution comparison impossible, since feature rankings can only be
+compared across regimes when the features are the same.
+
+One related rule matters more than it looks: a rolling statistic is only reported
+when the history actually spans its window. Without that, a 60-day cell would
+report a "364-day mean" computed from 60 days, a feature silently meaning
+something different in every cell while carrying the same name.
+
+### Leakage
+
+`build` refuses to run if the history reaches or passes the origin. Feature
+leakage is the one bug in this layer that would invalidate every downstream
+result while making every model look better, so it fails loudly rather than
+trusting the caller to have trimmed correctly.
