@@ -348,3 +348,41 @@ something different in every cell while carrying the same name.
 leakage is the one bug in this layer that would invalidate every downstream
 result while making every model look better, so it fails loudly rather than
 trusting the caller to have trimmed correctly.
+
+## Stage 4b: model wrappers
+
+### One imputation for everyone
+
+Classical and deep models need a gap-free regular grid, but the protocol
+deliberately injects gaps. Every model therefore receives the same imputed
+training series: interior gaps filled by linear interpolation, leading gaps
+dropped rather than back-filled, trailing gaps carried forward.
+
+Letting each model use its own native missing-data handling was the alternative,
+and it is tempting because LightGBM genuinely handles NaN well. It was rejected
+because it would confound forecast quality with imputation quality. If LightGBM
+won at 30 percent missingness, we could not say whether it forecasts better or
+merely copes with holes better. Equalizing the input means the benchmark measures
+the first thing, which is the thing the research question asks about.
+
+The cost is real and belongs in the limitations: interpolating an intermittent
+series invents fractional demand on days that had none, which makes the series
+look less intermittent than it is. The distortion applies identically to every
+model so the comparison stays fair, but the absolute numbers under heavy
+missingness are affected. The natural robustness check is to rerun with native
+per-model handling and see whether the ordering changes.
+
+Leading gaps are dropped rather than back-filled because before a series' first
+observation there is nothing to interpolate from, and inventing a value there
+would fabricate exactly the history the protocol withheld.
+
+### Models
+
+Seasonal naive, ETS and auto-ARIMA via statsforecast, plus Croston and TSB for
+the intermittent quadrants. LightGBM over the origin-anchored feature table with
+a Tweedie objective, which suits non-negative demand with a mass at zero better
+than squared error. Predictions are clipped at zero, since negative demand is not
+a thing.
+
+Nothing is hand-rolled. These are the reference implementations, so a reviewer
+asking "is your Croston correct" has a short answer.
