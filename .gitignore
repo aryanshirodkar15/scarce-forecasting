@@ -12,3 +12,4 @@ paper/*.aux
 paper/*.out
 paper/*.bbl
 .claude/
+/results/

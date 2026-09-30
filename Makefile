@@ -13,10 +13,10 @@ lint:
 	uv run ruff check src tests
 
 run-small:
-	@echo "not implemented until the runner stage"
+	uv run forecast-scarce run --config configs/small.yaml
 
 run-full:
-	@echo "not implemented until the runner stage"
+	uv run forecast-scarce run --config configs/full.yaml
 
 paper:
 	cd paper && tectonic -X compile main.tex

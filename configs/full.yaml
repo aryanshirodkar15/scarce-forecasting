@@ -1,0 +1,27 @@
+# The full grid from the protocol. Note that this is very large: 4 history
+# lengths x 4 series counts x 7 missingness settings x 5 seeds is 560 cells per
+# dataset. See DESIGN_NOTES.md on compute cost before launching it.
+name: full
+datasets: [m5, favorita, cta]
+models: [seasonal_naive, ets, auto_arima, croston, tsb, lightgbm]
+
+grid:
+  history_days: [60, 120, 365, 730]
+  n_series: [10, 50, 200, 1000]
+  seeds: [0, 1, 2, 3, 4]
+  missingness:
+    - {rate: 0.0, pattern: none}
+    - {rate: 0.05, pattern: mcar}
+    - {rate: 0.15, pattern: mcar}
+    - {rate: 0.30, pattern: mcar}
+    - {rate: 0.05, pattern: burst}
+    - {rate: 0.15, pattern: burst}
+    - {rate: 0.30, pattern: burst}
+
+allocation:
+  m5: equal
+  favorita: equal
+  cta: proportional
+
+horizon: 28
+test_days: 168

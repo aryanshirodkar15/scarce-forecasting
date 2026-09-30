@@ -30,7 +30,8 @@ class StatsForecastModel:
 
     name = "statsforecast"
 
-    def __init__(self, **kwargs):
+    def __init__(self, n_jobs: int = 1, **kwargs):
+        self.n_jobs = n_jobs
         self._kwargs = kwargs
         self._train: pd.DataFrame | None = None
 
@@ -49,7 +50,7 @@ class StatsForecastModel:
 
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            engine = StatsForecast(models=[self._model()], freq="D", n_jobs=1)
+            engine = StatsForecast(models=[self._model()], freq="D", n_jobs=self.n_jobs)
             forecast = engine.forecast(df=frame, h=horizon)
 
         column = [c for c in forecast.columns if c not in ("unique_id", "ds")][0]

@@ -39,8 +39,9 @@ class LightGBMForecaster:
         params: dict | None = None,
         num_boost_round: int = DEFAULT_ROUNDS,
         seed: int = 0,
+        n_jobs: int = 1,
     ):
-        self.params = {**DEFAULT_PARAMS, **(params or {}), "seed": seed}
+        self.params = {**DEFAULT_PARAMS, **(params or {}), "seed": seed, "num_threads": n_jobs}
         self.num_boost_round = num_boost_round
         self._booster: lgb.Booster | None = None
         self._columns: list[str] | None = None

@@ -386,3 +386,48 @@ a thing.
 
 Nothing is hand-rolled. These are the reference implementations, so a reviewer
 asking "is your Croston correct" has a short answer.
+
+## Stage 5: the runner
+
+### Resumable by construction
+
+Each cell writes its own parquet and manifest the moment it finishes, and a cell
+whose parquet already exists is skipped. This is not a convenience. Measured cost
+puts the full grid in the region of weeks, and a run of that length will be
+interrupted, by a closed laptop if nothing else. Losing a day of compute to an
+interruption is not an acceptable failure mode, so the unit of durability is the
+cell rather than the run.
+
+The same property makes the grid extensible. Adding a history length or a seed
+later runs only the new cells.
+
+### Failures are recorded, not fatal
+
+A model that raises on one cell has its error written into the results table and
+the run continues. Auto-ARIMA will occasionally fail to converge on a short
+intermittent window, and that is itself a finding about the scarce regime: a
+method that cannot fit is a method that cannot be used. Aborting the grid would
+throw away the other 1,679 cells over it.
+
+### Measured compute, and why the grid may have to shrink
+
+The full grid is 1,680 cells: 4 history lengths x 4 series counts x 7 missingness
+settings x 5 seeds, over 3 datasets. Times 6 models times 6 folds, that is on the
+order of 60,000 model fits.
+
+Timed on real CTA data at 12 series, one cell with all six models took 27 seconds
+at 60 days of history and 357 seconds at 730. Auto-ARIMA alone accounted for 318
+of those 357 seconds, so roughly 85 percent of the total. Scaling to the grid's
+mean series count gives an estimate near 78 days of continuous single-threaded
+compute, before any deep model is involved.
+
+Parallelism recovers a useful part of that but not all of it. With `n_jobs: 8` on
+a machine with 4 performance cores, the same auto-ARIMA cell went from 318
+seconds to 102, a measured 3.1x. That brings the estimate to roughly 30 days.
+
+The remaining lever is auto-ARIMA itself. Its cost grows with series count while
+its scientific contribution does not: it is a baseline, and ETS already occupies
+the classical-statistical position at a fraction of the cost. Restricting it to
+the smaller series counts and reporting it on a documented subgrid is the
+cheapest honest reduction available. That is a decision about what the paper can
+claim, so it is recorded here rather than taken silently.

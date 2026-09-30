@@ -1,0 +1,20 @@
+# A quick end-to-end exercise of the whole pipeline. Not an experiment: one
+# dataset, two history lengths, few series. Use it to check that a change has
+# not broken the grid before committing days of compute to the full run.
+name: small
+datasets: [cta]
+models: [seasonal_naive, ets, croston, tsb, lightgbm]
+
+grid:
+  history_days: [60, 730]
+  n_series: [12]
+  seeds: [0, 1]
+  missingness:
+    - {rate: 0.0, pattern: none}
+    - {rate: 0.15, pattern: mcar}
+
+allocation:
+  cta: proportional
+
+horizon: 28
+test_days: 168
