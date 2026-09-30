@@ -390,6 +390,29 @@ rolling-origin evaluation means \citep{tashman2000}: at each origin the
 forecaster may use every actual observed before that origin, and no fold is ever
 evaluated on data it was trained on.
 
+\subsection{Computational cost}
+\label{sec:cost}
+
+The grid is 1{,}680 cells: four history lengths, four series counts, seven
+missingness settings and five seeds, across three datasets. At six models and six
+folds per cell that is on the order of 60{,}000 model fits, which is large enough
+that the cost shapes what can be claimed.
+
+Timed on real data at 12 series, a single cell with all six models took 27
+seconds at 60 days of history and 357 seconds at 730. Auto-ARIMA accounted for
+318 of those 357. Scaled to the grid's mean series count this implies on the
+order of 78 days of continuous single-threaded computation before any deep model
+is fitted. Parallel fitting recovers part of it: on four performance cores the
+same auto-ARIMA cell fell from 318 seconds to 102, a measured factor of 3.1,
+putting the estimate near 30 days.
+
+We record this because it is a property of the experimental design rather than an
+implementation detail. Auto-ARIMA's cost grows with series count while its role
+does not, since ETS already occupies the classical-statistical position at a
+fraction of the cost, so a reduced subgrid for auto-ARIMA is the cheapest honest
+economy available. Experiments whose cost is not reported are difficult to
+reproduce, and a grid this size cannot be rerun casually by a reader.
+
 \section{Protocol Validation}
 \label{sec:validation}
 
@@ -535,8 +558,14 @@ therefore, if anything, understate the difficulty of the real problem.
 All code, configurations and design rationale are available at
 \url{https://github.com/aryanshirodkar15/scarce-forecasting}. Raw data is not
 redistributed; download scripts and content hashes are provided so that any
-reported figure can be traced to the exact bytes that produced it. Every grid
-cell is reconstructible from its manifest.
+reported figure can be traced to the exact bytes that produced it.
+
+Experiments are driven by YAML configuration and executed cell by cell, with each
+cell writing its own results table and manifest on completion. Every grid cell is
+therefore reconstructible in isolation from its manifest, without rerunning the
+grid, and a partial run is resumable. Results are emitted in tidy long format at
+the granularity of one row per series, fold, model and cell, so every aggregate
+in this paper can be recomputed from the released tables.
 
 \bibliography{refs}
 
