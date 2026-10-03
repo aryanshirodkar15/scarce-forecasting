@@ -23,12 +23,15 @@ import pandas as pd
 from .config import Cell, RunConfig
 from .data import Dataset, load
 from .intermittency import classify
-from .metrics import evaluate
+from .metrics import evaluate, scaled_errors
 from .models import build
 from .sampling import sample
 from .splits import rolling_origin, split
 
 RESULTS_DIR = Path(__file__).resolve().parents[2] / "results"
+
+# Below this many series, a worker pool costs more to start than it saves.
+PARALLEL_THRESHOLD = 50
 
 
 def run(config: RunConfig, results_dir: Path | None = None, refresh: bool = False) -> Path:
@@ -54,12 +57,23 @@ def run(config: RunConfig, results_dir: Path | None = None, refresh: bool = Fals
         dataset, stats = cache[name]
 
         print(f"[{index}/{len(cells)}] {cell.cell_id}")
-        rows, manifest = _run_cell(cell, dataset, stats, config)
+        rows, daily, manifest = _run_cell(cell, dataset, stats, config)
 
         if rows.empty:
             print("  no rows produced, skipping write")
             continue
+
+        # Tolerating model failures is deliberate, but a cell where everything
+        # failed is never a convergence story. It is a defect, and continuing
+        # would write a grid full of empty metrics that still exits zero.
+        if rows["error"].notna().all():
+            raise RuntimeError(
+                f"{cell.cell_id}: every model failed. First error: "
+                f"{rows['error'].dropna().iloc[0]}"
+            )
         rows.to_parquet(target, index=False)
+        if not daily.empty:
+            daily.to_parquet(out_dir / f"{cell.cell_id}.daily.parquet", index=False)
         (out_dir / f"{cell.cell_id}.manifest.json").write_text(manifest)
         done += 1
 
@@ -70,7 +84,7 @@ def run(config: RunConfig, results_dir: Path | None = None, refresh: bool = Fals
 
 def _run_cell(
     cell: Cell, dataset: Dataset, stats: pd.DataFrame, config: RunConfig
-) -> tuple[pd.DataFrame, str]:
+) -> tuple[pd.DataFrame, pd.DataFrame, str]:
     drawn = sample(dataset, cell.spec, stats=stats)
     folds = rolling_origin(
         pd.Timestamp(drawn.manifest.test_start),
@@ -80,12 +94,14 @@ def _run_cell(
     )
     quadrant = stats["quadrant"].astype(str)
 
-    rows = []
+    rows, daily = [], []
     for model_name in cell.models:
         for fold in folds:
             train, test = split(drawn.panel, fold)
             try:
-                scored, timing = _score(model_name, train, test, drawn.static, config)
+                scored, losses, timing = _score(
+                    model_name, train, test, drawn.static, _jobs_for(cell, config)
+                )
             except Exception as error:  # noqa: BLE001 - a failure is a data point
                 print(f"  {model_name} fold {fold.index} failed: {error}")
                 traceback.print_exc(limit=1)
@@ -98,26 +114,45 @@ def _run_cell(
             scored["error"] = None
             rows.append(scored)
 
+            losses["model"] = model_name
+            losses["fold"] = fold.index
+            daily.append(losses)
+
     if not rows:
-        return pd.DataFrame(), drawn.manifest.to_json()
+        return pd.DataFrame(), pd.DataFrame(), drawn.manifest.to_json()
 
     table = pd.concat(rows, ignore_index=True)
     table["quadrant"] = table["series_id"].map(quadrant)
+
+    losses = pd.concat(daily, ignore_index=True) if daily else pd.DataFrame()
     for key, value in _spec_columns(cell).items():
         table[key] = value
+        if not losses.empty:
+            losses[key] = value
 
-    return table, drawn.manifest.to_json()
+    return table, losses, drawn.manifest.to_json()
 
 
-def _score(model_name, train, test, static, config) -> tuple[pd.DataFrame, float]:
+def _jobs_for(cell: Cell, config: RunConfig) -> int:
+    """Parallel fitting has a crossover of its own.
+
+    macOS spawns rather than forks, so every worker re-imports lightgbm and
+    statsforecast before doing any work. Below roughly fifty series that startup
+    cost exceeds the fitting it is meant to accelerate, and a configured pool
+    makes the run several times slower rather than faster.
+    """
+    return config.n_jobs if cell.spec.n_series >= PARALLEL_THRESHOLD else 1
+
+
+def _score(model_name, train, test, static, n_jobs) -> tuple[pd.DataFrame, pd.DataFrame, float]:
     started = time.perf_counter()
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        model = build(model_name, n_jobs=config.n_jobs)
+        model = build(model_name, n_jobs=n_jobs)
         model.fit(train, static)
         prediction = model.predict(test[["series_id", "ds"]])
     elapsed = time.perf_counter() - started
-    return evaluate(test, prediction, train), elapsed
+    return evaluate(test, prediction, train), scaled_errors(test, prediction, train), elapsed
 
 
 def _failure_row(cell: Cell, model_name: str, fold: int, error: Exception) -> pd.DataFrame:
@@ -155,9 +190,17 @@ def _spec_columns(cell: Cell) -> dict:
 
 def collect(results_dir: Path) -> pd.DataFrame:
     """Every cell's rows in one tidy long frame."""
-    files = sorted(Path(results_dir).glob("*.parquet"))
+    files = [f for f in sorted(Path(results_dir).glob("*.parquet")) if ".daily" not in f.name]
     if not files:
         raise FileNotFoundError(f"no result parquet files under {results_dir}")
+    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+
+
+def collect_daily(results_dir: Path) -> pd.DataFrame:
+    """Per-date scaled losses, the input to the Diebold-Mariano tests."""
+    files = sorted(Path(results_dir).glob("*.daily.parquet"))
+    if not files:
+        raise FileNotFoundError(f"no daily parquet files under {results_dir}")
     return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
 
 

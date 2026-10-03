@@ -25,3 +25,4 @@ allocation:
 
 horizon: 28
 test_days: 168
+n_jobs: 8

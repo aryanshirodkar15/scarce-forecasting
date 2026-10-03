@@ -41,7 +41,12 @@ class LightGBMForecaster:
         seed: int = 0,
         n_jobs: int = 1,
     ):
-        self.params = {**DEFAULT_PARAMS, **(params or {}), "seed": seed, "num_threads": n_jobs}
+        self.params = {**DEFAULT_PARAMS, **(params or {}), "seed": seed}
+        # n_jobs=1 means "unset" here rather than "one thread": LightGBM picks a
+        # sensible thread count on its own, and pinning it to 1 was a large and
+        # entirely accidental slowdown.
+        if n_jobs > 1:
+            self.params["num_threads"] = n_jobs
         self.num_boost_round = num_boost_round
         self._booster: lgb.Booster | None = None
         self._columns: list[str] | None = None

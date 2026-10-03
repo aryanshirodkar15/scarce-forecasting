@@ -11,6 +11,7 @@ dependencies = [
     "pyarrow>=15",
     "pyyaml>=6",
     "requests>=2.31",
+    "scipy>=1.15.3",
     "statsforecast>=2.0.2",
 ]
 

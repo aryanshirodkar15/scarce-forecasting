@@ -7,6 +7,7 @@ from forecast_scarce.metrics import (
     mase,
     pinball,
     rmsse,
+    scaled_errors,
     seasonal_diffs,
     wape,
 )
@@ -140,3 +141,40 @@ def test_evaluate_counts_only_scored_points():
     out = evaluate(actual, forecast, train).set_index("series_id")
     assert out.loc["a", "n_scored"] == 1
     assert out.loc["a", "mase"] == 2.0
+
+
+# Per-date losses, the input to Diebold-Mariano.
+
+
+def test_scaled_errors_handles_categorical_series_ids():
+    """Sampled panels carry categorical series_id, and mapping a categorical
+    yields another categorical, which cannot be compared numerically. This
+    silently produced an entire results grid of errors."""
+    train = frame("a", TRAIN, "2020-01-01")
+    train["series_id"] = train["series_id"].astype("category")
+    actual = frame("a", [10, 20], "2020-01-15")
+    actual["series_id"] = actual["series_id"].astype("category")
+    forecast = frame("a", [12, 18], "2020-01-15")
+
+    out = scaled_errors(actual, forecast, train)
+    assert len(out) == 2
+    assert out["scaled_error"].tolist() == [2.0, 2.0]  # unit scale
+
+
+def test_scaled_errors_averages_across_series_per_date():
+    train = pd.concat([frame("a", TRAIN, "2020-01-01"), frame("b", TRAIN, "2020-01-01")])
+    actual = pd.concat([frame("a", [10], "2020-01-15"), frame("b", [10], "2020-01-15")])
+    forecast = pd.concat([frame("a", [12], "2020-01-15"), frame("b", [16], "2020-01-15")])
+
+    out = scaled_errors(actual, forecast, train)
+    assert len(out) == 1
+    assert out["scaled_error"].iloc[0] == 4.0  # mean of 2 and 6
+
+
+def test_scaled_errors_skips_series_with_a_zero_scale():
+    train = pd.concat([frame("a", TRAIN, "2020-01-01"), frame("flat", [5] * 14, "2020-01-01")])
+    actual = pd.concat([frame("a", [10], "2020-01-15"), frame("flat", [10], "2020-01-15")])
+    forecast = pd.concat([frame("a", [12], "2020-01-15"), frame("flat", [99], "2020-01-15")])
+
+    out = scaled_errors(actual, forecast, train)
+    assert out["scaled_error"].iloc[0] == 2.0  # the flat series contributes nothing

@@ -99,6 +99,41 @@ def pinball(y_true, y_pred, quantile: float) -> float:
     return float(np.mean(np.maximum(quantile * delta, (quantile - 1) * delta)))
 
 
+def scaled_errors(
+    actual: pd.DataFrame,
+    forecast: pd.DataFrame,
+    train: pd.DataFrame,
+    seasonality: int = DEFAULT_SEASONALITY,
+) -> pd.DataFrame:
+    """Mean scaled absolute error per date, averaged across series.
+
+    Diebold-Mariano operates on a time series of loss differentials, which the
+    per-series summaries cannot supply. Keeping per-series, per-date errors would
+    be billions of rows at full grid size, so the cross-section is collapsed here:
+    one number per date, which is exactly what the panel test consumes.
+
+    Errors are scaled per series before averaging, so a high-volume series does
+    not dominate the differential purely through its magnitude.
+    """
+    merged = actual.merge(forecast, on=["series_id", "ds"], suffixes=("", "_pred"))
+    scales = {
+        sid: np.mean(np.abs(seasonal_diffs(g["y"].to_numpy(), seasonality)))
+        for sid, g in train.groupby("series_id", observed=True)
+    }
+
+    # series_id is categorical, and mapping a categorical yields another
+    # categorical, which cannot be compared with ">". Force it to float.
+    merged["scale"] = pd.to_numeric(merged["series_id"].map(scales), errors="coerce")
+    usable = merged.loc[merged["scale"].notna() & (merged["scale"] > 0)].copy()
+    usable["scaled_error"] = (usable["y"] - usable["y_pred"]).abs() / usable["scale"]
+
+    return (
+        usable.dropna(subset=["scaled_error"])
+        .groupby("ds", as_index=False)["scaled_error"]
+        .mean()
+    )
+
+
 def evaluate(
     actual: pd.DataFrame,
     forecast: pd.DataFrame,

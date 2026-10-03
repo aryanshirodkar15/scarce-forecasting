@@ -431,3 +431,62 @@ the classical-statistical position at a fraction of the cost. Restricting it to
 the smaller series counts and reporting it on a documented subgrid is the
 cheapest honest reduction available. That is a decision about what the paper can
 claim, so it is recorded here rather than taken silently.
+
+## Stage 6: analysis
+
+### Where the loss differentials come from
+
+Diebold-Mariano needs a time series of loss differentials, which per-series
+summaries cannot supply: six folds is not a series. Keeping per-series, per-date
+errors would be on the order of a billion rows at full grid size.
+
+The resolution is to collapse the cross-section but not the time axis. Each cell
+stores one number per model per date: the mean scaled absolute error across
+series. That is 1,680 cells x 6 models x 168 days, under two million rows, and it
+is exactly the quantity the panel test consumes. Errors are scaled per series
+before averaging so a high-volume series cannot dominate the differential through
+sheer magnitude.
+
+### Three statistics, three jobs
+
+The HAC variance in the DM test uses lags up to h-1, because an h-step forecast
+error series is autocorrelated to that order by construction. Omitting it
+understates the variance and makes almost everything look significant. The
+Harvey-Leybourne-Newbold factor corrects the small-sample bias, and the statistic
+is read against a t distribution rather than a normal one.
+
+The bootstrap resamples whole series, not rows. A series contributes several
+folds whose errors are correlated, and resampling rows would treat them as
+independent and produce intervals that are too narrow.
+
+Benjamini-Hochberg controls the false discovery rate across the whole grid. This
+is not ceremony: the full grid runs thousands of pairwise tests, and at an
+uncorrected 5 percent, a few hundred would read as significant from chance alone.
+
+### Parallelism has its own crossover
+
+Worker pools were expected to be a straightforward speedup and are not. macOS
+spawns rather than forks, so every worker re-imports lightgbm and statsforecast
+before doing any work. At 12 series that startup cost swamps the fitting it is
+meant to accelerate, and a configured pool of 8 made the smoke run several times
+slower rather than faster. Parallel fitting is now engaged only at 50 series or
+more. The earlier measurement of a 3.1x speedup on auto-ARIMA still holds; it was
+taken on a cell expensive enough to amortize the pool.
+
+### A guard added after the fact
+
+The runner records model failures and continues, which is right: auto-ARIMA will
+not always converge on a short intermittent window, and that is a finding rather
+than a reason to abandon the grid.
+
+That tolerance hid a real defect. Sampled panels carry a categorical `series_id`,
+and mapping a categorical in pandas yields another categorical, which cannot be
+compared with a greater-than. Every scaled-error computation raised, every row in
+every cell was recorded as a failure, and the run printed "8 cells run" and
+exited zero. The grid looked complete and contained nothing.
+
+The lesson is that lenient error handling needs a floor. A cell in which every
+model failed is never a convergence story, so the runner now refuses to continue
+past one and reports the first error. Tolerating expected failures and detecting
+systemic ones are different requirements, and the first was quietly standing in
+for the second.

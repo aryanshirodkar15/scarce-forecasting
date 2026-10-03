@@ -144,6 +144,7 @@ dependencies = [
     { name = "pyarrow" },
     { name = "pyyaml" },
     { name = "requests" },
+    { name = "scipy" },
     { name = "statsforecast" },
 ]
 
@@ -165,6 +166,7 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6" },
     { name = "requests", specifier = ">=2.31" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.6" },
+    { name = "scipy", specifier = ">=1.15.3" },
     { name = "statsforecast", specifier = ">=2.0.2" },
 ]
 provides-extras = ["dev"]
