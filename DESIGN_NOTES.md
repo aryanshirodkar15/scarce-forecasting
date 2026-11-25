@@ -517,10 +517,19 @@ On the smoke grid (CTA, 12 series, 2 seeds), that comparison came out clearly:
 - Seed to seed within a cell: Spearman 0.93 to 0.95.
 - 60 days against 730, over the 25 features both support: 0.69 to 0.71, with
   top-10 overlap of 0.43.
-- Clean against 15 percent MCAR: 0.96 to 0.97, indistinguishable from seed noise.
+- Clean against 15 percent MCAR: Spearman 0.96 to 0.97, inside seed noise, but
+  top-10 overlap of 0.67 against a seed band of 0.82 to 1.0.
 
 So scarcity of history changes what the model relies on, and the change is well
-outside seed noise, while moderate missingness does not. The shift is also
+outside seed noise on both measures. Moderate missingness is subtler. By rank
+correlation it is within noise. By top-10 overlap it falls just outside: at
+k = 10 the Jaccard index is coarse, and 0.67 means two features swapped in the
+top ten where seeds swap at most one. That is weak evidence on two seeds, and it
+is reported as a small effect rather than as no effect.
+
+(An earlier version of these notes called the missingness comparison
+indistinguishable from seed noise. That was true of the rank correlation alone,
+and plotting both measures side by side is what exposed the overstatement.) The shift is also
 interpretable. At 60 days the model leans on raw recent lags; at 730 it moves to
 smoothed rolling means, with `mean_28` ranking first. `mean_28` is available at
 60 days as well, so this is a change of strategy rather than the availability
@@ -529,3 +538,30 @@ and falls back on the last few observations.
 
 This is a smoke-grid measurement, not the reported experiment: one smooth-only
 dataset, 12 series, two seeds.
+
+### Figures
+
+`forecast-scarce figures --results <dir>` regenerates every figure from a results
+directory. Each is written as a vector PDF for the paper, a PNG for review, and a
+CSV of the exact numbers plotted, so no value can only be read off a chart.
+
+Colour follows the model and never its rank. Each model owns a fixed slot in a
+categorical palette validated for colour-vision deficiency against white paper,
+including N-BEATS and TFT before they exist, so adding the deep tier later
+repaints nothing already published. Each model also carries its own marker shape,
+so the figures survive greyscale printing.
+
+The headline figure plots LightGBM minus each baseline, not raw MASE. The research
+question is where that difference crosses zero, so the zero line is the reference
+the reader needs. Raw MASE on one shared axis also failed in practice: Croston and
+TSB, misspecified on smooth series, sit near 2.0 while every crossover that matters
+happens between 0.9 and 1.2, and a shared axis flattened all of it. Each baseline
+gets its own panel and vertical scale, read against its own zero line.
+
+The significance matrix marks a square only when the comparison survived FDR
+correction in every cell pooled into it. Unanimity is the most conservative pooling
+rule available; the exact share is in the CSV.
+
+Smoke-grid figures are written under `results/`, which is not tracked, so a
+picture of a 12-series smoke run can never be mistaken for a result. Paper figures
+come from `make figures` against the full grid.

@@ -24,11 +24,25 @@ def main(argv: list[str] | None = None) -> int:
     experiment.add_argument("--refresh", action="store_true", help="rerun completed cells")
     experiment.add_argument("--dry-run", action="store_true", help="list cells and stop")
 
+    plots = sub.add_parser("figures", help="regenerate every figure from a results directory")
+    plots.add_argument("--results", required=True, type=Path)
+    plots.add_argument("--out", default=None, type=Path, help="defaults to <results>/figures")
+
     args = parser.parse_args(argv)
 
     if args.command == "data":
         return _data(args)
+    if args.command == "figures":
+        return _figures(args)
     return _run(args)
+
+
+def _figures(args) -> int:
+    from .figures import make_all  # matplotlib is slow to import; only pay for it here
+
+    for path in make_all(args.results, args.out):
+        print(f"wrote {path}")
+    return 0
 
 
 def _data(args) -> int:

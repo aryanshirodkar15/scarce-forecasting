@@ -1,4 +1,4 @@
-.PHONY: setup data test lint run-small run-full paper
+.PHONY: setup data test lint run-small run-full figures-small figures paper
 
 setup:
 	uv sync --extra dev
@@ -20,3 +20,9 @@ run-full:
 
 paper:
 	cd paper && tectonic -X compile main.tex
+
+figures-small:
+	uv run forecast-scarce figures --results results/small
+
+figures:
+	uv run forecast-scarce figures --results results/full --out paper/figures
