@@ -57,7 +57,7 @@ def run(config: RunConfig, results_dir: Path | None = None, refresh: bool = Fals
         dataset, stats = cache[name]
 
         print(f"[{index}/{len(cells)}] {cell.cell_id}")
-        rows, daily, manifest = _run_cell(cell, dataset, stats, config)
+        rows, daily, shap, manifest = _run_cell(cell, dataset, stats, config)
 
         if rows.empty:
             print("  no rows produced, skipping write")
@@ -74,6 +74,8 @@ def run(config: RunConfig, results_dir: Path | None = None, refresh: bool = Fals
         rows.to_parquet(target, index=False)
         if not daily.empty:
             daily.to_parquet(out_dir / f"{cell.cell_id}.daily.parquet", index=False)
+        if not shap.empty:
+            shap.to_parquet(out_dir / f"{cell.cell_id}.shap.parquet", index=False)
         (out_dir / f"{cell.cell_id}.manifest.json").write_text(manifest)
         done += 1
 
@@ -84,7 +86,7 @@ def run(config: RunConfig, results_dir: Path | None = None, refresh: bool = Fals
 
 def _run_cell(
     cell: Cell, dataset: Dataset, stats: pd.DataFrame, config: RunConfig
-) -> tuple[pd.DataFrame, pd.DataFrame, str]:
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str]:
     drawn = sample(dataset, cell.spec, stats=stats)
     folds = rolling_origin(
         pd.Timestamp(drawn.manifest.test_start),
@@ -94,12 +96,12 @@ def _run_cell(
     )
     quadrant = stats["quadrant"].astype(str)
 
-    rows, daily = [], []
+    rows, daily, shap = [], [], []
     for model_name in cell.models:
         for fold in folds:
             train, test = split(drawn.panel, fold)
             try:
-                scored, losses, timing = _score(
+                scored, losses, timing, attribution = _score(
                     model_name, train, test, drawn.static, _jobs_for(cell, config)
                 )
             except Exception as error:  # noqa: BLE001 - a failure is a data point
@@ -118,19 +120,26 @@ def _run_cell(
             losses["fold"] = fold.index
             daily.append(losses)
 
+            if attribution is not None:
+                attribution["model"] = model_name
+                attribution["fold"] = fold.index
+                shap.append(attribution)
+
     if not rows:
-        return pd.DataFrame(), pd.DataFrame(), drawn.manifest.to_json()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), drawn.manifest.to_json()
 
     table = pd.concat(rows, ignore_index=True)
     table["quadrant"] = table["series_id"].map(quadrant)
 
     losses = pd.concat(daily, ignore_index=True) if daily else pd.DataFrame()
+    attributions = pd.concat(shap, ignore_index=True) if shap else pd.DataFrame()
     for key, value in _spec_columns(cell).items():
         table[key] = value
-        if not losses.empty:
-            losses[key] = value
+        for extra in (losses, attributions):
+            if not extra.empty:
+                extra[key] = value
 
-    return table, losses, drawn.manifest.to_json()
+    return table, losses, attributions, drawn.manifest.to_json()
 
 
 def _jobs_for(cell: Cell, config: RunConfig) -> int:
@@ -144,15 +153,25 @@ def _jobs_for(cell: Cell, config: RunConfig) -> int:
     return config.n_jobs if cell.spec.n_series >= PARALLEL_THRESHOLD else 1
 
 
-def _score(model_name, train, test, static, n_jobs) -> tuple[pd.DataFrame, pd.DataFrame, float]:
+def _score(model_name, train, test, static, n_jobs):
     started = time.perf_counter()
+    targets = test[["series_id", "ds"]]
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         model = build(model_name, n_jobs=n_jobs)
         model.fit(train, static)
-        prediction = model.predict(test[["series_id", "ds"]])
+        prediction = model.predict(targets)
     elapsed = time.perf_counter() - started
-    return evaluate(test, prediction, train), scaled_errors(test, prediction, train), elapsed
+
+    # Only models that can explain themselves contribute attributions. Timing
+    # is taken before this so explanation cost is not billed as fitting cost.
+    attribution = model.attributions(targets) if hasattr(model, "attributions") else None
+    return (
+        evaluate(test, prediction, train),
+        scaled_errors(test, prediction, train),
+        elapsed,
+        attribution,
+    )
 
 
 def _failure_row(cell: Cell, model_name: str, fold: int, error: Exception) -> pd.DataFrame:
@@ -190,7 +209,11 @@ def _spec_columns(cell: Cell) -> dict:
 
 def collect(results_dir: Path) -> pd.DataFrame:
     """Every cell's rows in one tidy long frame."""
-    files = [f for f in sorted(Path(results_dir).glob("*.parquet")) if ".daily" not in f.name]
+    files = [
+        f
+        for f in sorted(Path(results_dir).glob("*.parquet"))
+        if ".daily" not in f.name and ".shap" not in f.name
+    ]
     if not files:
         raise FileNotFoundError(f"no result parquet files under {results_dir}")
     return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
@@ -209,3 +232,11 @@ def load_manifests(results_dir: Path) -> list[dict]:
         json.loads(path.read_text())
         for path in sorted(Path(results_dir).glob("*.manifest.json"))
     ]
+
+
+def collect_shap(results_dir: Path) -> pd.DataFrame:
+    """Per-feature mean absolute SHAP, per cell and fold, for models that support it."""
+    files = sorted(Path(results_dir).glob("*.shap.parquet"))
+    if not files:
+        raise FileNotFoundError(f"no shap parquet files under {results_dir}")
+    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)

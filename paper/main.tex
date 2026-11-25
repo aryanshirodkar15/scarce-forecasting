@@ -502,6 +502,38 @@ confirmed against real data rather than asserted. The forecaster used was
 seasonal naive, employed solely to exercise the pipeline; its accuracy is not
 reported and is not a result.
 
+\subsection{The analysis stack detects a crossover and an attribution shift}
+\label{sec:smoke}
+
+The complete pipeline, including inference, was exercised on a deliberately small
+grid: CTA only, 12 series, two seeds, history lengths of 60 and 730 days, with and
+without 15\% MCAR missingness. We report what it measured because it demonstrates
+that the machinery responds to the effects it is designed to detect. It is not the
+experiment, and its scope (one smooth-only dataset, 12 series) does not support
+any claim about the intermittent quadrants.
+
+\paragraph{Crossover.} The series-clustered bootstrap difference in MASE between
+LightGBM and seasonal naive was $+0.190$ at 60 days, 95\% interval
+$[+0.115, +0.271]$, and $-0.101$ at 730 days, interval $[-0.159, -0.042]$. The
+ordering reverses with intervals excluding zero on both sides. Of 80 pairwise
+Diebold--Mariano tests across the eight cells, 58 remained significant after
+Benjamini--Hochberg correction.
+
+\paragraph{Attribution shift.} Rank agreement of LightGBM's mean absolute SHAP
+values between two seeds of the same cell was 0.93 to 0.95 (Spearman), which we
+treat as the noise floor. Between the 60-day and 730-day regimes, restricted to
+the 25 features available in both, agreement fell to 0.69 to 0.71, with top-10
+overlap of 0.43, well outside seed noise. Between the clean panel and 15\% MCAR,
+agreement was 0.96 to 0.97, indistinguishable from it. The shift is
+interpretable: at 60 days the model relies on the most recent raw lags, while at
+730 days it moves to smoothed rolling means, with the 28-day mean ranked first.
+That feature is available in both regimes, so the change reflects a different
+strategy rather than missing inputs.
+
+Restricting comparisons to jointly available features matters. A naive comparison
+over all features would register the long lags as vanishing at 60 days, which is
+true by construction and uninformative about the model.
+
 \subsection{A defect visible only in real data}
 
 The CTA feed contains 1{,}236 rows that duplicate a station--day, all within a

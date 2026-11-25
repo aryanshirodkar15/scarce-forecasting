@@ -490,3 +490,42 @@ model failed is never a convergence story, so the runner now refuses to continue
 past one and reports the first error. Tolerating expected failures and detecting
 systemic ones are different requirements, and the first was quietly standing in
 for the second.
+
+### Attribution stability
+
+SHAP values come from LightGBM's native `pred_contrib`, which is exact TreeSHAP,
+so no separate explainer or dependency is involved. They are computed over the
+forecasts actually scored. Because the objective is Tweedie with a log link, the
+contributions are on the log scale rather than in units of demand. Only rankings
+are used downstream, and rankings are unaffected by a monotone link.
+
+The trap in comparing rankings across history lengths is that a 60-day cell
+cannot support `lag_364`, so that feature's attribution is near zero there by
+construction. A naive comparison against the 730-day ranking would report the
+long lags "dropping out" as instability, which is true and meaningless. Every
+comparison is therefore restricted to features available on both sides, using
+each feature's lookback parsed from its name. The same filter applies within a
+single regime, since unavailable features add only uninformative ties.
+
+The second requirement is a noise floor. A rank correlation of 0.7 means nothing
+on its own; it only means something next to the agreement between two seeds of
+the same cell. Regime instability is a finding only to the extent that it exceeds
+seed instability.
+
+On the smoke grid (CTA, 12 series, 2 seeds), that comparison came out clearly:
+
+- Seed to seed within a cell: Spearman 0.93 to 0.95.
+- 60 days against 730, over the 25 features both support: 0.69 to 0.71, with
+  top-10 overlap of 0.43.
+- Clean against 15 percent MCAR: 0.96 to 0.97, indistinguishable from seed noise.
+
+So scarcity of history changes what the model relies on, and the change is well
+outside seed noise, while moderate missingness does not. The shift is also
+interpretable. At 60 days the model leans on raw recent lags; at 730 it moves to
+smoothed rolling means, with `mean_28` ranking first. `mean_28` is available at
+60 days as well, so this is a change of strategy rather than the availability
+artifact. With little history the model cannot trust a smoothed level estimate
+and falls back on the last few observations.
+
+This is a smoke-grid measurement, not the reported experiment: one smooth-only
+dataset, 12 series, two seeds.

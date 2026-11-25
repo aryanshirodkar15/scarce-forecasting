@@ -12,6 +12,7 @@ chance alone.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from itertools import combinations
 
@@ -176,3 +177,120 @@ def summarise(results: pd.DataFrame, metric: str = "mase") -> pd.DataFrame:
         .agg(**{metric: (metric, "mean"), "n_series_scored": ("series_id", "nunique")})
         .reset_index()
     )
+
+
+# Attribution stability.
+#
+# The question is whether the features a model relies on stay put as data gets
+# scarce. Two kinds of comparison: across seeds within one cell configuration,
+# which measures how much of a ranking is noise, and across regimes, which
+# measures whether scarcity changes what the model attends to.
+
+_WINDOWED = re.compile(r"^(?:lag|mean|std|zero_rate)_(\d+)$")
+TOP_K = 10
+
+
+def feature_lookback(name: str) -> int:
+    """Days of history a feature needs before it can be anything but NaN."""
+    match = _WINDOWED.match(name)
+    return int(match.group(1)) if match else 0
+
+
+def available_at(features, history_days: int) -> list[str]:
+    return [f for f in features if feature_lookback(f) <= history_days]
+
+
+def _ranking(group: pd.DataFrame) -> pd.Series:
+    """Mean absolute SHAP per feature, averaged over whatever the group spans."""
+    return group.groupby("feature")["mean_abs_shap"].mean()
+
+
+def _agreement(a: pd.Series, b: pd.Series, features: list[str]) -> tuple[float, float]:
+    """Spearman correlation of two rankings and Jaccard overlap of their top k."""
+    a, b = a.reindex(features).fillna(0.0), b.reindex(features).fillna(0.0)
+    if len(features) < 3 or a.nunique() < 2 or b.nunique() < 2:
+        return float("nan"), float("nan")
+
+    rho = float(sps.spearmanr(a, b).statistic)
+    k = min(TOP_K, len(features))
+    top_a, top_b = set(a.nlargest(k).index), set(b.nlargest(k).index)
+    return rho, len(top_a & top_b) / len(top_a | top_b)
+
+
+def seed_stability(shap: pd.DataFrame) -> pd.DataFrame:
+    """How much two seeds of the same cell agree on what matters.
+
+    Only features the history can support are compared. A feature that is NaN
+    everywhere has an attribution near zero by construction, and including it
+    would inflate agreement with ties that carry no information.
+    """
+    keys = ["dataset", "history_days", "n_series", "missing_rate", "missing_pattern", "model"]
+    rows = []
+    for config, group in shap.groupby(keys, observed=True):
+        history = dict(zip(keys, config, strict=True))["history_days"]
+        features = available_at(group["feature"].unique(), history)
+        rankings = {seed: _ranking(g) for seed, g in group.groupby("seed")}
+
+        pairs = [
+            _agreement(rankings[a], rankings[b], features)
+            for a, b in combinations(sorted(rankings), 2)
+        ]
+        if not pairs:
+            continue
+        rhos, jaccards = zip(*pairs, strict=True)
+        rows.append(
+            {
+                **dict(zip(keys, config, strict=True)),
+                "rho": float(np.nanmean(rhos)),
+                "top_k_jaccard": float(np.nanmean(jaccards)),
+                "n_pairs": len(pairs),
+                "n_features": len(features),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def regime_stability(shap: pd.DataFrame, axis: str = "history_days") -> pd.DataFrame:
+    """Agreement between each regime's ranking and the richest regime's.
+
+    Along history, the reference is the longest history; along missingness, it
+    is the clean panel. Rankings are compared only over features available on
+    both sides. Comparing a 60-day ranking against a 730-day ranking over all
+    features would report the long lags "dropping out" at 60 days, which is
+    true by construction and says nothing about the model.
+    """
+    if axis == "history_days":
+        keys = ["dataset", "n_series", "missing_rate", "missing_pattern", "model"]
+        regime = shap["history_days"]
+    elif axis == "missingness":
+        keys = ["dataset", "history_days", "n_series", "model"]
+        regime = list(zip(shap["missing_rate"], shap["missing_pattern"], strict=True))
+    else:
+        raise ValueError(f"unknown axis {axis!r}, expected 'history_days' or 'missingness'")
+
+    frame = shap.assign(_regime=regime)
+    rows = []
+    for config, group in frame.groupby(keys, observed=True):
+        regimes = {r: g for r, g in group.groupby("_regime")}
+        reference = max(regimes) if axis == "history_days" else (0.0, "none")
+        if reference not in regimes:
+            continue
+
+        ref_ranking = _ranking(regimes[reference])
+        for label, g in regimes.items():
+            if label == reference:
+                continue
+            shortest = min(g["history_days"].min(), regimes[reference]["history_days"].min())
+            features = available_at(g["feature"].unique(), shortest)
+            rho, jaccard = _agreement(_ranking(g), ref_ranking, features)
+            rows.append(
+                {
+                    **dict(zip(keys, config, strict=True)),
+                    "regime": label,
+                    "reference": reference,
+                    "rho": rho,
+                    "top_k_jaccard": jaccard,
+                    "n_features": len(features),
+                }
+            )
+    return pd.DataFrame(rows)

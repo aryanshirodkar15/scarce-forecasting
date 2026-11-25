@@ -73,17 +73,33 @@ class LightGBMForecaster:
             self._booster = lgb.train(self.params, dataset, num_boost_round=self.num_boost_round)
 
     def predict(self, targets: pd.DataFrame) -> pd.DataFrame:
-        if self._booster is None or self._columns is None:
-            raise RuntimeError("lightgbm: predict called before fit")
-
-        origin = self._history["ds"].max() + pd.Timedelta(days=1)
-        table = build(self._history, targets, origin, self._static)
-        table = self._align(table)
-
+        table = self._prediction_table(targets)
         predicted = self._booster.predict(table[self._columns])
         out = targets[["series_id", "ds"]].copy()
         out["y"] = np.clip(predicted, 0, None)  # demand cannot be negative
         return out
+
+    def attributions(self, targets: pd.DataFrame) -> pd.DataFrame:
+        """Mean absolute SHAP value per feature over the forecasts actually made.
+
+        LightGBM computes exact TreeSHAP natively, so no separate explainer is
+        needed. The final contribution column is the expected value, not a
+        feature, and is dropped.
+        """
+        table = self._prediction_table(targets)
+        contributions = self._booster.predict(table[self._columns], pred_contrib=True)
+        return pd.DataFrame(
+            {
+                "feature": self._columns,
+                "mean_abs_shap": np.abs(contributions[:, :-1]).mean(axis=0),
+            }
+        )
+
+    def _prediction_table(self, targets: pd.DataFrame) -> pd.DataFrame:
+        if self._booster is None or self._columns is None:
+            raise RuntimeError("lightgbm: predict called before fit")
+        origin = self._history["ds"].max() + pd.Timedelta(days=1)
+        return self._align(build(self._history, targets, origin, self._static))
 
     def _training_table(self, history: pd.DataFrame, static: pd.DataFrame | None) -> pd.DataFrame:
         """Rolling origins inside the training window, so the model sees the same
